@@ -7,105 +7,98 @@ import requests
 from config.config_loader import get_config
 from scheduler.cost_tracker import add_cost
 from utils.logger import setup_logger
-
+import os
+import asyncio
+import sys
+from datetime import datetime
+from volcenginesdkarkruntime import AsyncArk
+from tqdm.asyncio import tqdm 
 log = setup_logger()
 config = get_config()
 
 BATCH_FILE_PATH = "data/batch_requests.jsonl"
 RESPONSE_DIR = "data/batch_responses"
 
-def generate_batch_payload(requests: list[dict], model: str) -> str:
-    """Create a JSONL file from prompts for OpenAI batch processing."""
-    os.makedirs(RESPONSE_DIR, exist_ok=True)
-    job_id = str(uuid.uuid4())
-    path = f"{RESPONSE_DIR}/batch_{job_id}.jsonl"
-
-    with open(path, "w", encoding="utf-8") as f:
-        for prompt in requests:
-            f.write(json.dumps({
-                "custom_id": prompt.get("id", str(uuid.uuid4())),
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": {
-                    "model": model,
-                    "messages": prompt["messages"],
-                    "temperature": 0,
-                }
-            }) + "\n")
-
-    log.info(f"Batch payload generated at: {path} with {len(requests)} entries")
-    return path
-
-def submit_batch_job(file_path: str, endpoint: str = "/v1/chat/completions") -> str:
-    """Uploads file and submits a batch job to OpenAI."""
-    uploaded_file = openai.files.create(file=open(file_path, "rb"), purpose="batch")
-    log.info(f"Uploaded file for batch: {uploaded_file.id}")
-
-    batch = openai.batches.create(
-        input_file_id=uploaded_file.id,
-        endpoint=endpoint,
-        completion_window="24h",
+def generate_batch_payload(requests: list[dict], model: str) -> list[dict]:
+    """生成符合AsyncArk格式的请求列表"""
+    return [{
+        "custom_id": prompt.get("id", str(uuid.uuid4())),
+        "model": model,
+        "messages": prompt["messages"],
+        "temperature": 0,
+        "thinking": {"type": "disabled"}
+    } for prompt in requests]
+async def process_batch_async(
+    requests: list[dict], 
+    model: str, 
+    max_workers: int = 1000
+) -> tuple[list[dict], list[dict]]:
+    #使用AsyncArk worker队列处理批量请求"
+    client = AsyncArk(
+        api_key=os.getenv("ARK_API_KEY"),
+        timeout=24 * 3600
     )
-    log.info(f"Submitted batch job: {batch.id}")
-    return batch.id
+    request_queue = asyncio.Queue()
+    results = []
+    errors = []
+    total_tasks = len(requests)
+    # 初始化进度条
+    # pbar = tqdm(total=total_tasks, desc=f"Processing {model} batch", unit="task")
 
-def poll_batch_status(batch_id: str, timeout_seconds: int = 10800) -> dict:
-    """Polls batch status every 60s. Cancels if no progress in `timeout_seconds`. Waits for confirmed cancellation."""
-    previous_completed = 0
-    last_progress_time = time.time()
+    # 填充请求队列
+    for req in requests:
+        await request_queue.put((req["custom_id"], req))
 
-    while True:
-        batch = openai.batches.retrieve(batch_id)
-        status = batch.status
-        request_counts = batch.request_counts
-        completed = getattr(request_counts, "completed", 0)
-        total = getattr(request_counts, "total", 0)
-
-        log.info(f"Batch {batch_id} status: {status} — {completed}/{total} completed")
-
-        if status in {"completed", "failed", "expired"}:
-            return {"status": status, "batch": batch}
-
-        # Reset timeout if there's progress
-        if completed > previous_completed:
-            last_progress_time = time.time()
-            previous_completed = completed
-
-        # Cancel if no progress for too long
-        if time.time() - last_progress_time > timeout_seconds:
-            log.warning(f"No progress in last {timeout_seconds // 60} mins. Cancelling batch {batch_id}...")
+    # 定义worker协程
+    async def worker(worker_id: int):
+        nonlocal results, errors
+        while True:
             try:
-                openai.batches.cancel(batch_id)
+                custom_id, req = await request_queue.get()
+                response = await client.chat.completions.create(
+                    model=req["model"],
+                    messages=req["messages"],
+                    temperature=req["temperature"],
+                    thinking=req["thinking"]
+                )
+                print(custom_id)
+                results.append({
+                    "custom_id": custom_id,
+                    "response": response.dict()
+                })
+                # pbar.update(1)
+                # pbar.set_postfix_str(f"Completed: {len(results)}/{total_tasks}")
             except Exception as e:
-                log.error(f"Error cancelling batch {batch_id}: {e}")
+                errors.append({
+                    "custom_id": custom_id,
+                    "error": str(e)
+                })
+                log.error(f"Worker {worker_id} failed: {str(e)}")
+                # pbar.update(1)  # 即使出错也更新进度
+            finally:
+                request_queue.task_done()
 
-            # Wait for cancellation confirmation
-            while True:
-                batch = openai.batches.retrieve(batch_id)
-                log.info(f"Waiting for cancellation... Current status: {batch.status}")
-                if batch.status in {"cancelled", "failed", "expired"}:
-                    return {"status": "cancelled", "batch": batch}
-                time.sleep(60)
+    # 创建并启动worker
+    workers = [asyncio.create_task(worker(i)) for i in range(max_workers)]
+    await request_queue.join()
 
-        time.sleep(60)
+    # 取消worker任务
+    # pbar.close()
+    for worker_task in workers:
+        worker_task.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
+    await client.close()
 
-def download_batch_results(batch_id: str, save_path: str):
-    """Downloads and stores the results of a completed batch job."""
-    batch = openai.batches.retrieve(batch_id)
-    if batch.status != "completed":
-        raise RuntimeError(f"Batch {batch_id} not completed.")
+    return results, errors
 
-    output_file_id = batch.output_file_id  # ← updated attribute
-    if not output_file_id:
-        raise RuntimeError(f"No output file found for batch {batch_id}.")
 
-    output_file = openai.files.retrieve(output_file_id)
-    response = openai.files.content(output_file_id)
-
-    with open(save_path, "wb") as f:
-        f.write(response.read())
-
-    log.info(f"Saved results to {save_path}")
+def download_batch_results(results: list[dict], save_path: str):
+    # """保存批量处理结果到JSONL文件"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result) + "\n")
+    log.info(f"Saved {len(results)} results to {save_path}")
 
 def add_estimated_batch_cost(requests: list[dict], model: str):
     """Estimate and record the cost of the batch job using accurate pricing."""

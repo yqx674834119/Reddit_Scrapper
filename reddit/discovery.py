@@ -1,4 +1,5 @@
 # reddit/discovery.py
+import os
 from openai import OpenAI
 import json
 from config.config_loader import get_config
@@ -8,7 +9,12 @@ log = setup_logger()
 config = get_config()
 PROMPT_PATH = "gpt/prompts/community_discovery.txt"
 
-client = OpenAI()
+client = OpenAI(
+    # 此为默认路径，您可根据业务所在地域进行配置
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    # 从环境变量中获取您的 API Key。此为默认方式，您可根据需要进行修改
+    api_key=os.environ.get("ARK_API_KEY"),
+)
 
 def load_discovery_prompt_template():
     """Load the community discovery prompt template from file."""
@@ -42,12 +48,22 @@ def discover_adjacent_subreddits(summaries: list[str], model: str = None) -> lis
     prompt = build_discovery_prompt(summaries)
 
     try:
+        # response = client.chat.completions.create(
+        #     model=model,
+        #     messages=prompt,
+        #     temperature=0.3
+        # )
         response = client.chat.completions.create(
-            model=model,
+            # 指定您创建的方舟推理接入点 ID，此处已帮您修改为您的推理接入点 ID
+            model=config["openai"]["model_filter"],
             messages=prompt,
             temperature=0.3
         )
+        # 保存prompt和response到本地文件，方便调试
+        
         content = response.choices[0].message.content
+        with open("data/discovery_prompt.log", "w", encoding="utf-8") as f:
+            json.dump({"prompt": prompt, "response": content}, f, ensure_ascii=False, indent=2)
         log.debug(f"Discovery API response: {content[:200]}...")
 
         suggestions = json.loads(content)

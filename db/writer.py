@@ -90,8 +90,8 @@ def update_post_insight(post_id: str, insight: dict):
         return  # No valid fields to update
 
     updates.append("insight_processed = 1")
-    updates.append("insight_processed_at = ?")
-    values.append(datetime.utcnow().isoformat())
+    # updates.append("insight_processed_at = ?")
+    # values.append(datetime.utcnow().isoformat())
 
     query = f"""
         UPDATE posts SET {', '.join(updates)}

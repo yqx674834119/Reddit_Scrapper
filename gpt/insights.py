@@ -2,13 +2,24 @@
 
 import os
 from typing import List, Dict, Any
+
 from utils.helpers import estimate_tokens, sanitize_text
 from utils.logger import setup_logger
 from config.config_loader import get_config
+# Ark OpenAI compatible client
+from openai import OpenAI
+from volcenginesdkarkruntime import Ark
+
 
 log = setup_logger()
 config = get_config()
 PROMPT_PATH = "gpt/prompts/insight_prompt.txt"
+
+# Initialize Ark OpenAI client
+client = Ark(
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    api_key=os.environ.get("ARK_API_KEY"),
+)
 
 
 def load_insight_prompt_template() -> str:

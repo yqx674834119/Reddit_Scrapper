@@ -83,7 +83,7 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
             results.append({
                 "id": post.id,
                 "title": post.title,
-                "body": post.selftext,
+                "body": "post: \'\'\'\n"+post.selftext+"\'\'\'",
                 "created_utc": post.created_utc,
                 "subreddit": subreddit_name,
                 "url": f"https://www.reddit.com{post.permalink}",
@@ -94,7 +94,8 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
                 try:
                     limiter.wait()  # One API call to fetch all comments
                     post.comments.replace_more(limit=0)
-                    for comment in post.comments.list():
+                    post_body = "post: \'\'\'\n"+post.selftext+"\'\'\'"
+                    for comment_index, comment in enumerate(post.comments.list()):
                         if comment.id in seen_ids:
                             continue
                         seen_ids.add(comment.id)
@@ -103,16 +104,28 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
                             continue
                         if is_already_processed(comment.id):
                             continue
-
+                        post_body = post_body + "\ncomment: \'\'\'\n" + comment.body + "\'\'\'"
+                        if(comment_index%10==0):
+                            results.append({
+                                "id": comment.id,
+                                "title": post.title,
+                                "body": post_body,
+                                "created_utc": comment.created_utc,
+                                "subreddit": subreddit_name,
+                                "url": f"https://www.reddit.com{comment.permalink}",
+                                "type": "comment"
+                            })
+                            post_body = "post: \'\'\'\n"+post.selftext+"\'\'\'"
+                    if(comment_index%10!=0):
                         results.append({
-                            "id": comment.id,
-                            "title": post.title,
-                            "body": comment.body,
-                            "created_utc": comment.created_utc,
-                            "subreddit": subreddit_name,
-                            "url": f"https://www.reddit.com{comment.permalink}",
-                            "type": "comment"
-                        })
+                                "id": comment.id,
+                                "title": post.title,
+                                "body": post_body,
+                                "created_utc": comment.created_utc,
+                                "subreddit": subreddit_name,
+                                "url": f"https://www.reddit.com{comment.permalink}",
+                                "type": "comment"
+                            })
                 except Exception as e:
                     log.warning(f"Failed to fetch comments for post {post.id}: {str(e)}")
 

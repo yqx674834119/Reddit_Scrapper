@@ -14,7 +14,7 @@ def setup_logger():
     os.makedirs("logs", exist_ok=True)
 
     # Create logger
-    logger = logging.getLogger("cronlytic.com")
+    logger = logging.getLogger("Market")
     logger.setLevel(log_level)
 
     # Clear existing handlers

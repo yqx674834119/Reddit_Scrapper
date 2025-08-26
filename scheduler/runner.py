@@ -12,51 +12,53 @@ from db.reader import get_top_insights_from_today, get_posts_by_ids
 from db.schema import create_tables
 from gpt.filters import prepare_batch_payload as prepare_filter_batch, estimate_batch_cost as estimate_filter_cost
 from gpt.insights import prepare_insight_batch, estimate_insight_cost
-from gpt.batch_api import generate_batch_payload, submit_batch_job, poll_batch_status, download_batch_results, add_estimated_batch_cost
+from gpt.batch_api import generate_batch_payload, process_batch_async, download_batch_results, add_estimated_batch_cost
 from db.cleaner import clean_old_entries
 from scheduler.cost_tracker import initialize_cost_tracking, can_process_batch
 from config.config_loader import get_config
 from utils.logger import setup_logger
 from utils.helpers import ensure_directory_exists, sanitize_text
-
+import asyncio
 log = setup_logger()
 config = get_config()
-
-def submit_with_backoff(batch_items, model, generate_file_fn, label="filter") -> str | None:
+async def submit_with_backoff(batch_items, model, generate_file_fn=None, label="filter") -> str | None:
+    """
+    提交 Ark batch 请求，带退避重试。
+    注意：generate_file_fn 在 Ark 模式下已无意义，这里保留参数只是为了兼容调用。
+    """
     delay = 10
     max_retries = 20
+
     for attempt in range(1, max_retries + 1):
         try:
             log.info(f"[Retry {attempt}/{max_retries}] Submitting {label} batch with {len(batch_items)} items...")
-            file_path = generate_file_fn(batch_items, model)
-            batch_id = submit_batch_job(file_path)
-            batch_info = poll_batch_status(batch_id)
-            status = batch_info["status"]
 
-            if status == "completed":
-                return batch_id
-            elif status == "cancelled":
-                log.warning(f"{label.capitalize()} batch {batch_id} was cancelled. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2
-                if delay > 3600:
-                    delay = 3600  # cap delay to 1 hour
+            # 生成 batch_id
+            requests = generate_batch_payload(batch_items, model)
+
+            # 提交任务
+            results, errors = await process_batch_async(requests, model,max_workers=len(requests)//10 or 10)
+
+            if errors:
+                log.warning(f"Batch contains {len(errors)} errors. Retrying...")
+                if attempt >= max_retries:
+                    save_failed_batch(errors, label)
+                    return None
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 3600)
                 continue
-            elif status == "failed":
-                log.warning(f"{label.capitalize()} batch failed. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2
-                if delay > 3600:
-                    delay = 3600  # cap delay to 1 hour
-                continue
+            # 保存结果
+            batch_id = uuid.uuid4().hex
+            result_path = f"data/batch_responses/{label}_result_{batch_id}.jsonl"
+            download_batch_results(results, result_path)
+            log.info(f"{label.capitalize()} batch completed. Results saved to {result_path}")
+            return result_path
         except Exception as e:
             log.error(f"Error in {label} batch retry #{attempt}: {str(e)}")
-            time.sleep(delay)
-            delay *= 2
-            if delay > 3600:
-                    delay = 3600  # cap delay to 1 hour
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 3600)
 
-    # All retries failed
+    # 全部失败
     log.error(f"❌ {label.capitalize()} batch failed after {max_retries} retries. Deferring.")
     save_failed_batch(batch_items, label)
     return None
@@ -121,7 +123,7 @@ def get_high_potential_ids_from_filter_results(score_threshold=7.0):
                 try:
                     result = json.loads(line)
                     post_id = result["custom_id"]
-                    content = result["response"]["body"]["choices"][0]["message"]["content"]
+                    content = result["response"]["choices"][0]["message"]["content"]
                     scores = json.loads(content)
                     weighted_score = (
                         scores["relevance_score"] * weights["relevance_weight"] +
@@ -131,8 +133,10 @@ def get_high_potential_ids_from_filter_results(score_threshold=7.0):
                     if weighted_score >= score_threshold:
                         high_ids.add(post_id)
                         update_post_filter_scores(post_id, scores)
+                    # log.info(f"Path {path} Post {post_id} scored {weighted_score:.2f} (Threshold: {score_threshold})")
                 except Exception as e:
                     log.error(f"Error parsing filter result line: {e}")
+                    continue
     return high_ids
 
 def run_daily_pipeline():
@@ -150,6 +154,7 @@ def run_daily_pipeline():
 
     log.info("Step 2: Scraping Reddit posts...")
     scraped_posts = scrape_all_configured_subreddits()
+    # 这里可以改成 从数据库中获取
     if not scraped_posts:
         log.warning("No posts found to analyze. Exiting pipeline.")
         return
@@ -178,18 +183,15 @@ def run_daily_pipeline():
         log.info(f"Submitting sub-batch {i + 1}/{len(filter_batches)} with {len(batch)} entries...")
         add_estimated_batch_cost(batch, model_filter)
 
-        batch_id = submit_with_backoff(
+        results_path = asyncio.run(submit_with_backoff(
             batch_items=batch,
             model=model_filter,
             generate_file_fn=generate_batch_payload,
             label="filter"
-        )
+        ))
 
-        if not batch_id:
+        if not results_path:
             continue  # move on to next batch
-
-        result_path = f"data/batch_responses/filter_result_{uuid.uuid4().hex}.jsonl"
-        download_batch_results(batch_id, result_path)
 
     log.info("Step 4: Selecting high-potential posts from filter results...")
     high_potential_ids = get_high_potential_ids_from_filter_results()
@@ -220,18 +222,16 @@ def run_daily_pipeline():
         log.info(f"Submitting insight sub-batch {i + 1}/{len(insight_batches)} with {len(batch)} entries...")
         add_estimated_batch_cost(batch, model_deep)
 
-        batch_id = submit_with_backoff(
+        insight_path = asyncio.run(submit_with_backoff(
             batch_items=batch,
             model=model_deep,
             generate_file_fn=generate_batch_payload,
             label="insight"
-        )
+        ))
 
-        if not batch_id:
+        if not insight_path:
             continue
 
-        insight_path = f"data/batch_responses/insight_result_{uuid.uuid4().hex}.jsonl"
-        download_batch_results(batch_id, insight_path)
         all_insight_paths.append(insight_path)
 
     log.info("Step 5: Updating posts with deep insights...")
@@ -241,7 +241,7 @@ def run_daily_pipeline():
                 for line in f:
                     result = json.loads(line)
                     post_id = result["custom_id"]
-                    content = result["response"]["body"]["choices"][0]["message"]["content"]
+                    content = result["response"]["choices"][0]["message"]["content"]
                     try:
                         insight = json.loads(content)
                         update_post_insight(post_id, insight)

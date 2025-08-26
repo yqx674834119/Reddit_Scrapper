@@ -37,3 +37,7 @@ data/batch_responses/
 Thumbs.db
 
 temp/
+# data_*/
+data*/
+data/*
+*.sqlite

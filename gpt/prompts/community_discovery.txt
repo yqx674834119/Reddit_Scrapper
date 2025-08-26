@@ -1,5 +1,4 @@
-You are an expert in community growth and developer marketing. A SaaS product named "Cronlytic" helps users schedule and monitor HTTP jobs like a cloud-based cron replacement.
-
+You are an professional product manager. Your task is to help identify where users express unmet needs, frustrations, or wishes for new tools/websites across Reddit communities.
 Based on the following top-performing Reddit posts (titles and summaries), recommend a ranked list of 12 adjacent subreddits that might contain similar pain points or lead opportunities.
 
 For each recommended subreddit, provide:
@@ -14,7 +13,7 @@ Only include subreddits that:
 - Are active in the past month
 - Are not already on the main tracked list
 
-Respond in this format:
+Respond strictly in JSON array format, like this（ without "```json"）:
 [
   {
     "subreddit": "selfhosted",

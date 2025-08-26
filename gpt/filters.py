@@ -1,6 +1,5 @@
 # gpt/filters.py
 
-import openai
 import os
 from typing import List, Dict
 from utils.helpers import estimate_tokens, sanitize_text
@@ -31,7 +30,7 @@ def load_filter_prompt_template():
 
 FILTER_PROMPT_TEMPLATE = load_filter_prompt_template()
 
-
+# 不止是Post tile 和 Post body,还需要把原文加上
 def build_filter_prompt(post: dict) -> List[Dict]:
     """Constructs the GPT-4.1 Mini prompt for a Reddit post using template."""
     return [
