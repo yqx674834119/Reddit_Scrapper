@@ -23,6 +23,7 @@ def create_tables():
         id TEXT PRIMARY KEY,
         url TEXT,
         title TEXT,
+        title_id TEXT,
         body TEXT,
         subreddit TEXT,
         created_utc REAL,
@@ -35,8 +36,10 @@ def create_tables():
         tags TEXT,
         roi_weight INTEGER,
         community_type TEXT,
-        type TEXT,  -- 'post' or 'comment'
-        insight_processed INTEGER DEFAULT 0
+        type TEXT,  -- 'post' or 'comment',
+        insight_processed INTEGER DEFAULT 0,
+        pain_point TEXT,
+        potential_solution TEXT
     );
     """)
 

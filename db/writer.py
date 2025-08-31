@@ -22,13 +22,14 @@ def insert_post(post: dict, community_type: str = "primary"):
     try:
         conn.execute("""
         INSERT OR IGNORE INTO posts (
-            id, url, title, body, subreddit, created_utc, last_active,
+            id, url, title,title_id, body, subreddit, created_utc, last_active,
             processed_at, community_type, type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             post["id"],
             post["url"],
             post["title"],
+            post["title_id"],
             post.get("body", ""),
             post["subreddit"],
             post["created_utc"],
@@ -80,7 +81,9 @@ def update_post_insight(post_id: str, insight: dict):
     fields = {
         "lead_type": insight.get("lead_type"),
         "tags": ", ".join(insight["tags"]) if "tags" in insight else None,
-        "roi_weight": insight.get("roi_weight")
+        "roi_weight": insight.get("roi_weight"),
+        "pain_point": insight.get("pain_point"),
+        "potential_solution": insight.get("potential_solution"),
     }
 
     updates = [f"{key} = ?" for key, value in fields.items() if value is not None]
@@ -102,6 +105,35 @@ def update_post_insight(post_id: str, insight: dict):
         conn.commit()
     except sqlite3.Error as e:
         print(f"[SQLite update_post_insight Error] {e}")
+def update_post_cluster(post_id: str, cluster: str):
+    """Update deeper insights (lead_type, tags, roi_weight). Safe from overwriting with nulls."""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    fields = {
+        "pain_point": cluster,
+    }
+
+    updates = [f"{key} = ?" for key, value in fields.items() if value is not None]
+    values = [value for value in fields.values() if value is not None]
+
+    if not updates:
+        return  # No valid fields to update
+
+    updates.append("insight_processed = 1")
+    # updates.append("insight_processed_at = ?")
+    # values.append(datetime.utcnow().isoformat())
+
+    query = f"""
+        UPDATE posts SET {', '.join(updates)}
+        WHERE id = ?
+    """
+    try:
+        cursor.execute(query, values + [post_id])
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"[SQLite update_post_insight Error] {e}")
+
 
 def mark_insight_processed(post_id: str):
     """Mark a post as having been processed for deep insight."""

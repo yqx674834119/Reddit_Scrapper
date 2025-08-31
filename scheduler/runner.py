@@ -7,11 +7,11 @@ import glob
 from datetime import datetime
 import time
 from reddit.scraper import scrape_all_configured_subreddits
-from db.writer import insert_post, update_post_filter_scores, update_post_insight, mark_insight_processed
+from db.writer import insert_post, update_post_filter_scores, update_post_insight, mark_insight_processed,update_post_cluster
 from db.reader import get_top_insights_from_today, get_posts_by_ids
 from db.schema import create_tables
 from gpt.filters import prepare_batch_payload as prepare_filter_batch, estimate_batch_cost as estimate_filter_cost
-from gpt.insights import prepare_insight_batch, estimate_insight_cost
+from gpt.insights import prepare_insight_batch, estimate_insight_cost,prepare_cluster_batch
 from gpt.batch_api import generate_batch_payload, process_batch_async, download_batch_results, add_estimated_batch_cost
 from db.cleaner import clean_old_entries
 from scheduler.cost_tracker import initialize_cost_tracking, can_process_batch
@@ -235,6 +235,7 @@ def run_daily_pipeline():
         all_insight_paths.append(insight_path)
 
     log.info("Step 5: Updating posts with deep insights...")
+    insight_post_id = []
     try:
         for insight_path in all_insight_paths:
             with open(insight_path, "r", encoding="utf-8") as f:
@@ -246,17 +247,57 @@ def run_daily_pipeline():
                         insight = json.loads(content)
                         update_post_insight(post_id, insight)
                         mark_insight_processed(post_id)
+                        insight_post_id.append(post_id)
                     except Exception as e:
                         log.error(f"Error parsing insight for post {post_id}: {str(e)}")
     except Exception as e:
         log.error(f"Error reading insight results: {str(e)}")
 
-    output_limit = config["scoring"]["output_top_n"]
-    top_posts = get_top_insights_from_today(limit=output_limit)
-    log.info(f"✅ Pipeline finished. Found {len(top_posts)} qualified leads.")
+    log.info("Step 6: Clustering similar insights...")
+    # 聚合相同title下的痛点，全部放在 Post Pain point 下面
+    # 1. 获取所有已经 insight_processed 的 comment 和 post
+    insight_post = get_posts_by_ids(insight_post_id, require_unprocessed=False)
+    # 2. 按 title 聚合同一个帖子下的所有 pain_point
+    cluster_batch = prepare_cluster_batch(insight_post)
+    model_deep = config["openai"]["model_deep"]
+    cluster_batchs = split_batch_by_token_limit(cluster_batch, model_deep)
+    all_cluster_paths = []
 
-    for i, post in enumerate(top_posts[:5], 1):
-        log.info(f"{i}. [{post['subreddit']}] {post['title']} — ROI: {post['roi_weight']} | Tags: {post['tags']} - {post['url']}")
+    for i, batch in enumerate(cluster_batchs):
+        log.info(f"Submitting insight sub-batch {i + 1}/{len(cluster_batchs)} with {len(batch)} entries...")
+        cluster_path = asyncio.run(submit_with_backoff(
+            batch_items=batch,
+            model=model_deep,
+            generate_file_fn=None,
+            label="cluster"
+        ))
+        if not cluster_path:
+            continue
+
+        all_cluster_paths.append(cluster_path)
+    # 写入到数据库中
+    try:
+        for cluster_path in all_cluster_paths:
+            with open(cluster_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    result = json.loads(line)
+                    post_id = result["custom_id"]
+                    content = result["response"]["choices"][0]["message"]["content"]
+                    try:                        
+                        update_post_cluster(post_id, content)
+                        mark_insight_processed(post_id)
+                    except Exception as e:
+                        log.error(f"Error parsing insight for post {post_id}: {str(e)}")
+    except Exception as e:
+        log.error(f"Error reading insight results: {str(e)}")
+
+
+    output_limit = config["scoring"]["output_top_n"]
+    top_posts = get_top_insights_from_today(limit=output_limit)      
+    log.info(f"✅ Pipeline finished. Found {len(top_posts)} qualified leads.")
+ 
+    for i, post in enumerate(top_posts):
+        log.info(f"{i}. [{post['subreddit']}] {post['title']} — Pain Point: {post['pain_point']} | ROI: {post['roi_weight']} | Tags: {post['tags']} - {post['url']}")
 
 
 if __name__ == "__main__":

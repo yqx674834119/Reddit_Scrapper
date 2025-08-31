@@ -7,12 +7,13 @@ Your task is to extract key marketing insights:
 3. Suggest up to 3 **marketing-relevant tags** (e.g., "automation", "collaboration", "data sync", "UI/UX issue", "scalability", "cost concerns").
 4. Estimate an **opportunity weight（roi_weight）** (1–5) — 1 = low value, 5 = high value for outreach.
 5. Briefly explain why this post is worth responding to or not.
-
+6. Suggest a potential_solution: a short description of a possible product, service, or SaaS direction that could address the pain point.
 Respond with a JSON object like（ without "```json"）:
 {
   "pain_point": "User needs to schedule recurring API calls but lacks infrastructure to run a backend 24/7.",
   "lead_type": "solo founder",
   "tags": ["collaboration", "serverless", "no backend"],
   "roi_weight": 4,
-  "justification": "The post highlights a clear and recurring pain point in team workflows, making it highly valuable for product ideation."
+  "justification": "The post highlights a clear and recurring pain point in team workflows, making it highly valuable for product ideation.",
+  "potential_solution": "A hosted cron-job SaaS that lets solo founders run recurring API calls without managing servers."
 }

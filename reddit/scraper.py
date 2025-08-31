@@ -83,13 +83,14 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
             results.append({
                 "id": post.id,
                 "title": post.title,
+                "title_id": post.id,
                 "body": "post: \'\'\'\n"+post.selftext+"\'\'\'",
                 "created_utc": post.created_utc,
                 "subreddit": subreddit_name,
                 "url": f"https://www.reddit.com{post.permalink}",
                 "type": "post"
             })
-
+            post_title_id =  post.id
             if include_comments:
                 try:
                     limiter.wait()  # One API call to fetch all comments
@@ -109,6 +110,7 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
                             results.append({
                                 "id": comment.id,
                                 "title": post.title,
+                                "title_id": post_title_id,
                                 "body": post_body,
                                 "created_utc": comment.created_utc,
                                 "subreddit": subreddit_name,
@@ -120,6 +122,7 @@ def fetch_posts_from_subreddit(subreddit_name, limit=200) -> list:
                         results.append({
                                 "id": comment.id,
                                 "title": post.title,
+                                "title_id": post_title_id,
                                 "body": post_body,
                                 "created_utc": comment.created_utc,
                                 "subreddit": subreddit_name,
@@ -218,3 +221,56 @@ def safe_fetch(generator, name):
     except Exception as e:
         log.error(f"Unknown error while fetching {name}: {e}")
         return []
+
+from pytrends.request import TrendReq
+import pandas as pd
+
+def get_monthly_trends_with_yoy(keywords, geo="worldwide"):
+    """
+    获取关键词的 Google Trends 近5年趋势 (按月) + YoY 增长率
+
+    Args:
+        keywords (list[str]): 关键词列表
+        geo (str): 地区代码，默认 worldwide。可用 "US", "CN" 等
+    
+    Returns:
+        dict: 每个关键词对应的趋势数据和YoY结果
+              {
+                "trend": 原始月度时间序列 (pd.DataFrame),
+                "yoy_growth": YoY 增长率 (pd.DataFrame)
+              }
+    """
+    pytrends = TrendReq(hl='en-US', tz=360,timeout=(10, 30))
+    results = {}
+
+    for kw in keywords:
+        # 获取近5年趋势 (Google Trends 默认周频率)
+        pytrends.build_payload([kw], timeframe='today 5-y', geo='', gprop='')
+        df = pytrends.interest_over_time()
+
+        if df.empty:
+            print(f"⚠️ No data for {kw}")
+            continue
+
+        df = df.drop(columns=["isPartial"])
+        df = df.infer_objects(copy=False)  # 避免 future downcasting warning
+
+        # 转换为月度频率 (ME = MonthEnd)
+        df_monthly = df.resample("ME").mean()
+
+        # 按年份计算年均值 (YE = YearEnd)
+        yearly = df_monthly.resample("YE").mean()
+        yearly.index = yearly.index.year
+
+        # 过滤掉全零年份
+        yearly = yearly[yearly[kw] > 0]
+
+        # 计算YoY 增长率
+        yoy = yearly.pct_change().dropna() * 100
+
+        results[kw] = {
+            "trend": df_monthly,   # 原始月度时间序列
+            "yoy_growth": yoy      # YoY 增长率 (%)
+        }
+    
+    return results

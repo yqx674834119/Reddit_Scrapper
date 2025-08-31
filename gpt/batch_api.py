@@ -56,7 +56,7 @@ async def process_batch_async(
             try:
                 custom_id, req = await request_queue.get()
                 response = await client.chat.completions.create(
-                    model=req["model"],
+                    model=model,
                     messages=req["messages"],
                     temperature=req["temperature"],
                     thinking=req["thinking"]

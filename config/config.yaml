@@ -11,10 +11,10 @@ subreddits:
     - startups
     # - sideproject
     # - experienceddevs
-  exploratory_limit: 12             # Max exploratory subreddits at a time
+  exploratory_limit: 3             # Max exploratory subreddits at a time
   exploratory_refresh_days: 7       # How often to refresh improvised list
   exploratory_percentage: 5        # % of posts from exploratory communities
-  primary_percentage: 5            # % of posts from configured communities
+  primary_percentage: 5           # % of posts from configured communities
 
 # Reddit scraping settings
 scraper:
@@ -26,8 +26,8 @@ scraper:
 
 # OpenAI settings
 openai:
-  model_filter: deepseek-v3-1-250821        # For pre-filtering stage
-  model_deep: deepseek-v3-1-250821               # For insight extraction
+  model_filter: ep-20250827142015-h666t             # For pre-filtering stage doubao_flash
+  model_deep: ep-20250827141843-k7jq2               # For insight extraction
   use_batch_api: true
   monthly_budget_usd: 100           # Cost cap for safety
   max_tokens_per_post: 1000         # Estimate for budgeting
